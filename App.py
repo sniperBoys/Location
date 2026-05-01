@@ -5,438 +5,383 @@ from datetime import datetime, timedelta
 import random
 import time
 
+# Map libraries - try import
 try:
     import folium
     from streamlit_folium import st_folium
-    MAP_AVAILABLE = True
+    MAP_OK = True
 except:
-    MAP_AVAILABLE = False
+    MAP_OK = False
 
+# Page config
 st.set_page_config(page_title="Security Tracker", page_icon="🛡️", layout="wide")
 
-# Files
-DATA_FILE = "locations.json"
+# File names
+LOCATION_FILE = "locations.json"
 OTP_FILE = "otp_store.json"
 
-# Session
-if 'current_otp' not in st.session_state:
-    st.session_state.current_otp = None
-if 'admin_logged_in' not in st.session_state:
-    st.session_state.admin_logged_in = False
+# Session state
+if 'admin_login' not in st.session_state:
+    st.session_state.admin_login = False
+if 'show_otp' not in st.session_state:
+    st.session_state.show_otp = None
+if 'device_for_otp' not in st.session_state:
+    st.session_state.device_for_otp = None
 
-# ============ FUNCTIONS ============
+# ============ HELPER FUNCTIONS ============
+
 def generate_otp():
-    return ''.join(random.choices('0123456789', k=6))
+    """Generate 6 digit OTP"""
+    return str(random.randint(100000, 999999))
 
-def save_otp(device_id, otp):
+def save_otp_to_file(device_id, otp, hours=24):
+    """Save OTP with expiry"""
     try:
-        otp_data = {}
+        data = {}
         if os.path.exists(OTP_FILE):
             with open(OTP_FILE, 'r') as f:
-                otp_data = json.load(f)
+                data = json.load(f)
         
-        otp_data[device_id] = {
+        data[device_id] = {
             "otp": otp,
-            "created": datetime.now().isoformat(),
-            "expires": (datetime.now() + timedelta(hours=12)).isoformat(),
-            "used": False
+            "created": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "expires": (datetime.now() + timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S"),
+            "active": True
         }
         
         with open(OTP_FILE, 'w') as f:
-            json.dump(otp_data, f)
+            json.dump(data, f, indent=2)
         return True
-    except:
+    except Exception as e:
+        st.error(f"Error: {e}")
         return False
 
-def verify_otp(device_id, entered_otp):
+def check_otp(device_id, otp_entered):
+    """Verify OTP - Reusable"""
     try:
         if not os.path.exists(OTP_FILE):
-            return False, "No OTP generated"
+            return False, "No OTP generated yet"
         
         with open(OTP_FILE, 'r') as f:
-            otp_data = json.load(f)
+            data = json.load(f)
         
-        if device_id not in otp_data:
-            return False, "Invalid device"
+        if device_id not in data:
+            return False, "No OTP for this device"
         
-        otp_info = otp_data[device_id]
-        expiry = datetime.fromisoformat(otp_info['expires'])
+        otp_info = data[device_id]
         
-        if datetime.now() > expiry:
+        # Check expiry
+        expire_time = datetime.strptime(otp_info['expires'], "%Y-%m-%d %H:%M:%S")
+        if datetime.now() > expire_time:
             return False, "OTP expired"
-        if otp_info['used']:
-            return False, "OTP already used"
-        if otp_info['otp'] == entered_otp:
-            otp_data[device_id]['used'] = True
-            with open(OTP_FILE, 'w') as f:
-                json.dump(otp_data, f)
-            return True, "Verified!"
         
-        return False, "Invalid OTP"
-    except:
-        return False, "Error"
+        # Check otp
+        if otp_info['otp'] == otp_entered:
+            return True, "Valid"
+        else:
+            return False, "Wrong OTP"
+    
+    except Exception as e:
+        return False, f"Error: {e}"
 
-def save_location(device_id, lat, lon):
+def save_location_data(device_id, lat, lon):
+    """Save location coordinates"""
     try:
         data = {}
-        if os.path.exists(DATA_FILE):
-            with open(DATA_FILE, 'r') as f:
+        if os.path.exists(LOCATION_FILE):
+            with open(LOCATION_FILE, 'r') as f:
                 data = json.load(f)
         
         if device_id not in data:
             data[device_id] = []
         
         data[device_id].append({
-            "time": datetime.now().strftime("%H:%M:%S"),
             "date": datetime.now().strftime("%Y-%m-%d"),
+            "time": datetime.now().strftime("%H:%M:%S"),
             "lat": float(lat),
             "lon": float(lon)
         })
         
-        if len(data[device_id]) > 1000:
-            data[device_id] = data[device_id][-1000:]
+        # Keep last 500 records
+        if len(data[device_id]) > 500:
+            data[device_id] = data[device_id][-500:]
         
-        with open(DATA_FILE, 'w') as f:
-            json.dump(data, f)
+        with open(LOCATION_FILE, 'w') as f:
+            json.dump(data, f, indent=2)
         return True
     except:
         return False
 
-def load_locations():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, 'r') as f:
+def get_all_locations():
+    """Load all saved locations"""
+    if os.path.exists(LOCATION_FILE):
+        with open(LOCATION_FILE, 'r') as f:
             return json.load(f)
     return {}
 
-# ============ UI ============
-st.title("🛡️ Security Location Tracker")
-st.markdown("### 🔐 Automatic OTP Tracking System")
+# ============ MAIN APP ============
 
-params = st.query_params
+st.title("🛡️ Security Location Tracking System")
+st.markdown("---")
 
-# ============ BOSS VIEW ============
-boss_tab, admin_tab = st.tabs(["📱 Boss View", "🔐 Admin Panel"])
+# Get URL parameters
+url_params = st.query_params
 
-with boss_tab:
-    st.header("📍 Automatic Location Sharing")
+# ============ CREATE TABS ============
+tab1, tab2 = st.tabs(["📱 Boss View", "🔐 Admin Panel"])
+
+# ============ TAB 1: BOSS VIEW ============
+with tab1:
+    st.header("📍 Location Sharing")
     
-    # Auto-detect if OTP in URL
-    if 'device' in params and 'otp' in params:
-        device = params['device']
-        otp = params['otp']
+    # Check if OTP and device in URL
+    has_device = 'device' in url_params
+    has_otp = 'otp' in url_params
+    has_location = 'lat' in url_params and 'lon' in url_params
+    
+    if has_device and has_otp:
+        device = url_params['device']
+        otp = url_params['otp']
         
-        valid, msg = verify_otp(device, otp)
+        # Verify OTP
+        valid, message = check_otp(device, otp)
         
         if valid:
-            # Check if location coordinates in URL (from JavaScript)
-            if 'lat' in params and 'lon' in params:
-                lat = params['lat']
-                lon = params['lon']
-                save_location(device, lat, lon)
-                st.success(f"📍 Location Auto-Sent: {lat}, {lon}")
+            # Save location if coordinates present
+            if has_location:
+                save_location_data(device, url_params['lat'], url_params['lon'])
             
-            st.success(f"✅ Tracking Active!")
+            # Success message
+            st.success("✅ OTP Verified - Tracking Active")
+            st.balloons()
+            
+            # Status display
             st.markdown(f"""
-            ### 🟢 Live Tracking ON
-            **Device:** {device}  
-            **Status:** Location auto-sending every 30 seconds
-            """)
+            <div style="background: linear-gradient(135deg, #11998e, #38ef7d); 
+                        padding: 20px; border-radius: 10px; color: white; text-align: center;">
+                <h2>🟢 LIVE TRACKING</h2>
+                <p><b>Device:</b> {device}</p>
+                <p><b>OTP:</b> {otp}</p>
+                <p>📍 Location auto-sending every 30 seconds</p>
+            </div>
+            """, unsafe_allow_html=True)
             
-            # JavaScript for automatic location capture
+            # JavaScript for auto location
             st.components.v1.html(f"""
-                <html>
-                <head>
-                    <style>
-                        body {{
-                            font-family: Arial;
-                            text-align: center;
-                            padding: 20px;
-                            background: #f0f8f0;
-                        }}
-                        .status {{
-                            color: green;
-                            font-size: 24px;
-                            font-weight: bold;
-                        }}
-                        .pulse {{
-                            animation: pulse 2s infinite;
-                        }}
-                        @keyframes pulse {{
-                            0% {{ opacity: 1; }}
-                            50% {{ opacity: 0.5; }}
-                            100% {{ opacity: 1; }}
-                        }}
-                    </style>
-                </head>
-                <body>
-                    <div class="status pulse">🟢 TRACKING ACTIVE</div>
-                    <p>📍 Location auto-sending...</p>
-                    <p style="color:gray;font-size:12px;">Keep this page open</p>
-                    
-                    <script>
-                    var device = '{device}';
-                    var otp = '{otp}';
-                    var baseUrl = window.location.href.split('?')[0];
-                    
-                    function sendLocation() {{
-                        if (navigator.geolocation) {{
-                            navigator.geolocation.getCurrentPosition(
-                                function(position) {{
-                                    var lat = position.coords.latitude;
-                                    var lon = position.coords.longitude;
-                                    
-                                    // Send to server
-                                    var url = baseUrl + '?device=' + device + 
-                                              '&otp=' + otp + 
-                                              '&lat=' + lat + 
-                                              '&lon=' + lon;
-                                    
-                                    fetch(url, {{mode: 'no-cors'}});
-                                    
-                                    console.log('Location sent: ' + lat + ', ' + lon);
-                                }},
-                                function(error) {{
-                                    console.log('GPS waiting...');
-                                }},
-                                {{
-                                    enableHighAccuracy: true,
-                                    timeout: 10000,
-                                    maximumAge: 0
-                                }}
-                            );
-                        }}
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <meta name="viewport" content="width=device-width, initial-scale=1">
+                <style>
+                    body {{ font-family: Arial; text-align: center; padding: 10px; }}
+                    .dot {{ height: 20px; width: 20px; background-color: #00ff00; 
+                            border-radius: 50%; display: inline-block; animation: blink 1s infinite; }}
+                    @keyframes blink {{ 0% {{ opacity: 1; }} 50% {{ opacity: 0; }} 100% {{ opacity: 1; }} }}
+                </style>
+            </head>
+            <body>
+                <span class="dot"></span> <b>GPS Active</b>
+                <p style="font-size: 12px; color: gray;">Keep this page open</p>
+                <script>
+                var deviceName = "{device}";
+                var otpCode = "{otp}";
+                var appUrl = window.location.href.split('?')[0];
+                
+                function sendGPS() {{
+                    if (navigator.geolocation) {{
+                        navigator.geolocation.getCurrentPosition(
+                            function(pos) {{
+                                var lat = pos.coords.latitude;
+                                var lon = pos.coords.longitude;
+                                var newUrl = appUrl + '?device=' + deviceName + 
+                                           '&otp=' + otpCode + 
+                                           '&lat=' + lat + '&lon=' + lon;
+                                fetch(newUrl);
+                                console.log('📍 Sent: ' + lat + ', ' + lon);
+                            }},
+                            function(err) {{
+                                console.log('⏳ Waiting for GPS...');
+                            }},
+                            {{ enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }}
+                        );
                     }}
-                    
-                    // Send location immediately and then every 30 seconds
-                    sendLocation();
-                    setInterval(sendLocation, 30000);
-                    </script>
-                </body>
-                </html>
-            """, height=250)
+                }}
+                
+                sendGPS();
+                setInterval(sendGPS, 30000);
+                </script>
+            </body>
+            </html>
+            """, height=150)
             
-            st.info("📱 **Boss:** Bas page open rakhein, location automatic update hoti rahegi")
-            
+            # Show last known location
+            if has_location:
+                st.info(f"📍 Current: {url_params['lat']}, {url_params['lon']}")
+        
         else:
-            st.error(f"❌ {msg}")
+            st.error(f"❌ {message}")
     
-    # Manual OTP Form
-    with st.form("otp_form"):
-        st.subheader("🔢 Enter OTP to Start")
-        st.markdown("OTP enter karte hi location automatic share hona start ho jayegi")
-        
-        device_id = st.text_input("Your Name/ID:", "Sarah")
-        otp_input = st.text_input("6-Digit OTP:", max_chars=6)
-        
-        if st.form_submit_button("✅ Start Auto Tracking"):
-            valid, msg = verify_otp(device_id, otp_input)
-            if valid:
-                st.success("✅ Verified! Redirecting...")
-                # Redirect with OTP
-                st.markdown(f"""
-                <meta http-equiv="refresh" content="1;url=?device={device_id}&otp={otp_input}">
-                """, unsafe_allow_html=True)
-            else:
-                st.error(msg)
-
-# ============ ADMIN PANEL ============
-with admin_tab:
-    st.header("🔐 Admin Controls")
+    # OTP entry form
+    st.markdown("---")
+    st.subheader("🔢 Enter OTP to Start Tracking")
     
-    if not st.session_state.admin_logged_in:
-        admin_pass = st.text_input("Admin Password:", type="password")
-        if st.button("🔑 Login"):
-            if admin_pass == "Security@2024":
-                st.session_state.admin_logged_in = True
-                st.rerun()
-            else:
-                st.error("Wrong password")
-    else:
-        st.success("✅ Admin Access")
-        
-        # OTP Generator
-        st.subheader("🎫 Generate OTP for Boss")
-        
+    with st.form("boss_form"):
         col1, col2 = st.columns(2)
         with col1:
-            device_name = st.text_input("Boss Name:", "Sarah")
+            device_input = st.text_input("Your Name:", value="Sarah", key="boss_device")
         with col2:
-            validity = st.selectbox("OTP Validity:", ["12 Hours", "24 Hours", "7 Days"])
+            otp_input = st.text_input("OTP Code:", max_chars=6, key="boss_otp")
         
-        validity_hours = {"12 Hours": 12, "24 Hours": 24, "7 Days": 168}
+        submit_btn = st.form_submit_button("✅ Start Tracking", use_container_width=True)
         
-        if st.button("🔢 Generate OTP", type="primary", use_container_width=True):
-            otp = generate_otp()
-            
-            # Custom validity
-            otp_data = {}
-            if os.path.exists(OTP_FILE):
-                with open(OTP_FILE, 'r') as f:
-                    otp_data = json.load(f)
-            
-            otp_data[device_name] = {
-                "otp": otp,
-                "created": datetime.now().isoformat(),
-                "expires": (datetime.now() + timedelta(hours=validity_hours[validity])).isoformat(),
-                "used": False
-            }
-            
-            with open(OTP_FILE, 'w') as f:
-                json.dump(otp_data, f)
-            
-            st.session_state.current_otp = otp
-            
-            # Display OTP
-            st.success("✅ OTP Generated Successfully!")
-            st.markdown(f"""
-            ---
-            ## 🔢 OTP: **{otp}**
-            
-            📱 **Device:** {device_name}  
-            ⏰ **Valid:** {validity}  
-            🔗 **App Link:** YOUR_STREAMLIT_URL
-            
-            ---
-            ### 📋 Boss Ko Yeh Bhejein:
-            
-            ```
-            👋 Salam Sir,
-            
-            Location tracking ke liye:
-            
-            1. Yeh link open karein:
-               YOUR_STREAMLIT_URL
-            
-            2. Apna naam: {device_name}
-            
-            3. OTP enter karein: {otp}
-            
-            4. Done! Page open rakhein.
-            
-            Kuch aur nahi karna 🙏
-            ```
-            """)
+        if submit_btn:
+            if device_input and otp_input:
+                valid, msg = check_otp(device_input, otp_input)
+                if valid:
+                    st.success("✅ Verified! Starting tracking...")
+                    st.markdown(f"""
+                    <meta http-equiv="refresh" content="1;url=?device={device_input}&otp={otp_input}">
+                    """, unsafe_allow_html=True)
+                else:
+                    st.error(f"❌ {msg}")
+            else:
+                st.warning("Please fill both fields")
+
+# ============ TAB 2: ADMIN PANEL ============
+with tab2:
+    st.header("🔐 Admin Panel")
+    
+    # Admin login
+    if not st.session_state.admin_login:
+        st.subheader("Admin Login")
+        password = st.text_input("Password:", type="password", key="admin_pass")
         
-        st.divider()
+        if st.button("🔑 Login", use_container_width=True):
+            if password == "Secure@2024":
+                st.session_state.admin_login = True
+                st.rerun()
+            else:
+                st.error("❌ Wrong password!")
+    
+    else:
+        st.success("✅ Admin Access Granted")
         
-        # Live Tracking View
-        st.subheader("📍 Live Location Monitor")
+        # OTP Generation Section
+        st.markdown("---")
+        st.subheader("🎫 Generate OTP")
         
         col1, col2, col3 = st.columns(3)
         with col1:
-            if st.button("🔄 Refresh", use_container_width=True):
-                st.rerun()
+            new_device = st.text_input("Device Name:", value="Sarah", key="admin_device")
         with col2:
-            auto_refresh = st.checkbox("Auto Refresh", value=True)
+            validity_hours = st.selectbox("Valid For:", [1, 6, 12, 24, 48, 72, 168], 
+                                         format_func=lambda x: f"{x} Hours")
+        with col3:
+            st.write("")  # Spacer
+            st.write("")
+            gen_btn = st.button("🔢 Generate OTP", use_container_width=True, type="primary")
         
-        locations = load_locations()
+        if gen_btn:
+            new_otp = generate_otp()
+            if save_otp_to_file(new_device, new_otp, validity_hours):
+                st.session_state.show_otp = new_otp
+                st.session_state.device_for_otp = new_device
         
-        if locations:
-            # Status cards
-            for device, locs in locations.items():
+        # Show generated OTP
+        if st.session_state.show_otp:
+            st.markdown(f"""
+            <div style="background: linear-gradient(135deg, #667eea, #764ba2); 
+                        padding: 25px; border-radius: 15px; color: white; text-align: center;">
+                <h1 style="font-size: 60px; letter-spacing: 10px;">{st.session_state.show_otp}</h1>
+                <p><b>Device:</b> {st.session_state.device_for_otp}</p>
+                <p><b>Valid:</b> {validity_hours} Hours</p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            st.info("""
+            📱 **Boss Ko Bhejne Ka Message:**
+            
+            App link kholen → Apna naam likhen → OTP enter karen → Done!
+            """)
+        
+        # Live locations
+        st.markdown("---")
+        st.subheader("📍 Live Locations")
+        
+        if st.button("🔄 Refresh Data", use_container_width=True):
+            st.rerun()
+        
+        all_locations = get_all_locations()
+        
+        if all_locations:
+            for device, locs in all_locations.items():
                 if locs:
                     latest = locs[-1]
                     
-                    # Calculate time difference
-                    time_str = f"{latest['date']} {latest['time']}"
-                    last_time = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
-                    diff = (datetime.now() - last_time).seconds
+                    # Calculate timing
+                    last_update = datetime.strptime(f"{latest['date']} {latest['time']}", 
+                                                   "%Y-%m-%d %H:%M:%S")
+                    seconds_ago = (datetime.now() - last_update).seconds
                     
-                    if diff < 60:
-                        status_icon = "🟢"
-                        status_text = "LIVE NOW"
-                        status_color = "green"
-                    elif diff < 300:
-                        status_icon = "🟡"
-                        status_text = f"{diff//60} min ago"
-                        status_color = "orange"
+                    if seconds_ago < 60:
+                        status = "🟢 LIVE"
+                        color = "#00cc00"
+                    elif seconds_ago < 300:
+                        status = f"🟡 {seconds_ago//60} min ago"
+                        color = "#ff9900"
                     else:
-                        status_icon = "🔴"
-                        status_text = f"{diff//60} min ago"
-                        status_color = "red"
+                        status = f"🔴 {seconds_ago//60} min ago"
+                        color = "#ff0000"
                     
+                    # Display card
                     st.markdown(f"""
-                    <div style="
-                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                        padding: 15px;
-                        border-radius: 10px;
-                        margin: 10px 0;
-                        color: white;
-                    ">
-                        <h3>{status_icon} {device}</h3>
-                        <p>📍 {latest['lat']:.4f}, {latest['lon']:.4f}</p>
-                        <p>🕐 {latest['time']} | <span style="color: {status_color};">{status_text}</span></p>
-                        <p>📊 Total Updates: {len(locs)}</p>
+                    <div style="border-left: 5px solid {color}; padding: 10px; 
+                              margin: 10px 0; background: #f9f9f9; border-radius: 5px;">
+                        <h3>{status} | 📱 {device}</h3>
+                        <p>📍 <b>{latest['lat']:.6f}, {latest['lon']:.6f}</b></p>
+                        <p>🕐 {latest['date']} at {latest['time']}</p>
+                        <p>📊 Updates: {len(locs)}</p>
                     </div>
                     """, unsafe_allow_html=True)
             
             # Map
-            if MAP_AVAILABLE:
-                st.subheader("🗺️ Map View")
+            if MAP_OK:
+                st.subheader("🗺️ Live Map")
                 try:
-                    latest_lats = []
-                    latest_lons = []
-                    for locs in locations.values():
+                    # Get center
+                    centers_lat = []
+                    centers_lon = []
+                    for locs in all_locations.values():
                         if locs:
-                            latest = locs[-1]
-                            latest_lats.append(latest['lat'])
-                            latest_lons.append(latest['lon'])
+                            l = locs[-1]
+                            centers_lat.append(l['lat'])
+                            centers_lon.append(l['lon'])
                     
-                    if latest_lats:
-                        center_lat = sum(latest_lats) / len(latest_lats)
-                        center_lon = sum(latest_lons) / len(latest_lons)
+                    if centers_lat:
+                        map_center = [sum(centers_lat)/len(centers_lat), 
+                                    sum(centers_lon)/len(centers_lon)]
+                        m = folium.Map(location=map_center, zoom_start=15)
                         
-                        m = folium.Map(location=[center_lat, center_lon], zoom_start=15)
-                        
-                        colors = ['red', 'blue', 'green', 'purple', 'orange']
-                        for idx, (device, locs) in enumerate(locations.items()):
+                        for device, locs in all_locations.items():
                             if locs:
-                                color = colors[idx % len(colors)]
-                                
-                                # Path trail
-                                points = [[l['lat'], l['lon']] for l in locs[-20:]]
-                                if len(points) > 1:
-                                    folium.PolyLine(points, color=color, weight=3, opacity=0.5).add_to(m)
-                                
-                                # Latest position
                                 latest = locs[-1]
                                 folium.Marker(
                                     [latest['lat'], latest['lon']],
-                                    popup=f"<b>{device}</b><br>🕐 {latest['time']}",
-                                    icon=folium.Icon(color=color, icon='user', prefix='fa')
-                                ).add_to(m)
-                                
-                                folium.Circle(
-                                    [latest['lat'], latest['lon']],
-                                    radius=20,
-                                    color=color,
-                                    fill=True,
-                                    opacity=0.3
+                                    popup=f"<b>{device}</b><br>{latest['time']}",
+                                    icon=folium.Icon(color='red', icon='user')
                                 ).add_to(m)
                         
                         st_folium(m, width=800, height=500)
                 except:
-                    st.warning("Map loading...")
-            
-            # History table
-            with st.expander("📊 View History"):
-                for device, locs in locations.items():
-                    if locs:
-                        st.write(f"**{device}** - Last 20 updates:")
-                        st.dataframe(locs[-20:], use_container_width=True)
+                    st.warning("Map unavailable")
         else:
-            st.info("📍 Waiting for location data... Generate OTP and share with boss")
+            st.info("📡 Waiting for location data...")
         
         # Auto refresh
-        if auto_refresh:
-            time.sleep(10)
-            st.rerun()
+        time.sleep(15)
+        st.rerun()
 
 # Footer
 st.markdown("---")
-st.markdown("""
-<div style='text-align:center; color:gray;'>
-    <h4>🛡️ Automatic Security System</h4>
-    <p>✅ OTP-Based | ✅ Auto Location | ✅ No Manual Input | ✅ Boss-Friendly</p>
-</div>
-""", unsafe_allow_html=True)
+st.markdown("<p style='text-align:center;color:gray;'>🛡️ OTP-Based Auto Tracking | Perfect Working System</p>", 
+           unsafe_allow_html=True)
