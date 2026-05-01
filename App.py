@@ -1,227 +1,490 @@
 import streamlit as st
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 import random
+import base64
+from fpdf import FPDF
 import time
 
-st.set_page_config(page_title="Security Tracker", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="Public Complaint Box", page_icon="📮", layout="wide")
 
-LOCATION_FILE = "locations.json"
-OTP_FILE = "otp_store.json"
+# Files
+COMPLAINT_FILE = "complaints.json"
+ADMIN_PASS = "Admin@2024"
 
+# Session
 if 'admin_login' not in st.session_state:
     st.session_state.admin_login = False
-if 'show_otp' not in st.session_state:
-    st.session_state.show_otp = None
-if 'device_for_otp' not in st.session_state:
-    st.session_state.device_for_otp = None
+if 'complaint_done' not in st.session_state:
+    st.session_state.complaint_done = False
 
-def generate_otp():
-    return str(random.randint(100000, 999999))
+# ============ FUNCTIONS ============
 
-def save_otp_to_file(device_id, otp, hours=24):
+def generate_id():
+    now = datetime.now()
+    return f"PUB-{now.strftime('%Y%m%d')}-{random.randint(1000,9999)}"
+
+def save_complaint(data):
     try:
-        data = {}
-        if os.path.exists(OTP_FILE):
-            with open(OTP_FILE, 'r') as f:
-                data = json.load(f)
-        data[device_id] = {
-            "otp": otp,
-            "expires": (datetime.now() + timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
-        }
-        with open(OTP_FILE, 'w') as f:
-            json.dump(data, f)
-        return True
-    except:
-        return False
-
-def check_otp(device_id, otp_entered):
-    try:
-        if not os.path.exists(OTP_FILE):
-            return False
-        with open(OTP_FILE, 'r') as f:
-            data = json.load(f)
-        if device_id in data and data[device_id]['otp'] == otp_entered:
-            return True
-        return False
-    except:
-        return False
-
-def save_location_data(device_id, lat, lon):
-    try:
-        data = {}
-        if os.path.exists(LOCATION_FILE):
-            with open(LOCATION_FILE, 'r') as f:
-                data = json.load(f)
-        if device_id not in data:
-            data[device_id] = []
-        data[device_id].append({
+        all_data = {}
+        if os.path.exists(COMPLAINT_FILE):
+            with open(COMPLAINT_FILE, 'r') as f:
+                all_data = json.load(f)
+        
+        complaint_id = generate_id()
+        
+        all_data[complaint_id] = {
+            **data,
+            "id": complaint_id,
             "date": datetime.now().strftime("%Y-%m-%d"),
-            "time": datetime.now().strftime("%H:%M:%S"),
-            "lat": float(lat),
-            "lon": float(lon)
-        })
-        if len(data[device_id]) > 500:
-            data[device_id] = data[device_id][-500:]
-        with open(LOCATION_FILE, 'w') as f:
-            json.dump(data, f)
-        return True
+            "time": datetime.now().strftime("%I:%M %p"),
+            "status": "Pending"
+        }
+        
+        with open(COMPLAINT_FILE, 'w') as f:
+            json.dump(all_data, f, indent=2)
+        
+        return complaint_id
     except:
-        return False
+        return None
 
-def get_all_locations():
-    if os.path.exists(LOCATION_FILE):
-        with open(LOCATION_FILE, 'r') as f:
+def load_complaints():
+    if os.path.exists(COMPLAINT_FILE):
+        with open(COMPLAINT_FILE, 'r') as f:
             return json.load(f)
     return {}
 
-# ============ MAIN ============
-st.title("🛡️ Security Location Tracker")
+def update_status(cid, status):
+    data = load_complaints()
+    if cid in data:
+        data[cid]['status'] = status
+        with open(COMPLAINT_FILE, 'w') as f:
+            json.dump(data, f)
+        return True
+    return False
+
+def delete_complaint(cid):
+    data = load_complaints()
+    if cid in data:
+        del data[cid]
+        with open(COMPLAINT_FILE, 'w') as f:
+            json.dump(data, f)
+        return True
+    return False
+
+def create_pdf(cid, data):
+    pdf = FPDF()
+    pdf.add_page()
+    
+    # Header
+    pdf.set_fill_color(33, 150, 243)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font('Arial', 'B', 22)
+    pdf.cell(0, 18, 'PUBLIC COMPLAINT REPORT', 0, 1, 'C', True)
+    pdf.ln(8)
+    
+    # Complaint ID Box
+    pdf.set_fill_color(255, 243, 224)
+    pdf.set_text_color(230, 81, 0)
+    pdf.set_font('Arial', 'B', 16)
+    pdf.cell(0, 12, f"ID: {cid}", 0, 1, 'C', True)
+    pdf.ln(8)
+    
+    # Status
+    pdf.set_text_color(0, 0, 0)
+    status_colors = {
+        "Pending": (255, 152, 0),
+        "In Progress": (33, 150, 243),
+        "Resolved": (76, 175, 80),
+        "Rejected": (244, 67, 54)
+    }
+    
+    if data['status'] in status_colors:
+        r, g, b = status_colors[data['status']]
+        pdf.set_text_color(r, g, b)
+    pdf.set_font('Arial', 'B', 14)
+    pdf.cell(0, 10, f"Status: {data['status']}", 0, 1)
+    pdf.ln(5)
+    
+    # Line
+    pdf.set_draw_color(33, 150, 243)
+    pdf.set_line_width(0.5)
+    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(8)
+    
+    # Details Section
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_font('Arial', 'B', 13)
+    pdf.set_fill_color(232, 245, 253)
+    pdf.cell(0, 10, '  PERSONAL INFORMATION', 0, 1, 'L', True)
+    pdf.ln(5)
+    
+    fields = [
+        ("Name", data['name']),
+        ("Phone", data['phone']),
+        ("Email", data.get('email', 'Not provided')),
+        ("City", data.get('city', 'Not provided')),
+        ("Date", f"{data['date']} at {data['time']}"),
+        ("Priority", data['priority']),
+        ("Category", data['category']),
+        ("Subject", data['subject']),
+    ]
+    
+    for label, value in fields:
+        pdf.set_font('Arial', 'B', 11)
+        pdf.cell(35, 9, f"  {label}:", 0, 0)
+        pdf.set_font('Arial', '', 11)
+        pdf.cell(0, 9, str(value), 0, 1)
+    
+    pdf.ln(5)
+    
+    # Description
+    pdf.set_font('Arial', 'B', 13)
+    pdf.set_fill_color(232, 245, 253)
+    pdf.cell(0, 10, '  COMPLAINT DESCRIPTION', 0, 1, 'L', True)
+    pdf.ln(5)
+    
+    pdf.set_font('Arial', '', 11)
+    pdf.set_x(15)
+    pdf.multi_cell(180, 8, data['description'])
+    
+    pdf.ln(10)
+    
+    # Footer
+    pdf.set_draw_color(33, 150, 243)
+    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(5)
+    pdf.set_font('Arial', 'I', 9)
+    pdf.set_text_color(128, 128, 128)
+    pdf.cell(0, 8, 'Confidential Document - Generated by Public Complaint System', 0, 1, 'C')
+    pdf.cell(0, 8, f'Printed: {datetime.now().strftime("%B %d, %Y at %I:%M %p")}', 0, 1, 'C')
+    
+    return pdf.output(dest='S').encode('latin-1')
+
+def download_link(pdf_bytes, filename):
+    b64 = base64.b64encode(pdf_bytes).decode()
+    return f'''
+    <a href="data:application/pdf;base64,{b64}" 
+       download="{filename}"
+       style="background:#2196F3;color:white;padding:12px 25px;
+              text-decoration:none;border-radius:8px;display:inline-block;">
+        📥 Download PDF
+    </a>
+    '''
+
+# ============ MAIN UI ============
+
+# Custom CSS
+st.markdown("""
+<style>
+    .big-title {
+        font-size: 50px;
+        text-align: center;
+        font-weight: bold;
+        color: #1565C0;
+    }
+    .subtitle {
+        text-align: center;
+        font-size: 18px;
+        color: #666;
+    }
+    .success-box {
+        background: linear-gradient(135deg, #11998e, #38ef7d);
+        padding: 30px;
+        border-radius: 15px;
+        color: white;
+        text-align: center;
+    }
+    .complaint-card {
+        border-left: 5px solid #2196F3;
+        padding: 15px;
+        margin: 10px 0;
+        background: #f9f9f9;
+        border-radius: 5px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Header
+st.markdown('<p class="big-title">📮 PUBLIC COMPLAINT BOX</p>', unsafe_allow_html=True)
+st.markdown('<p class="subtitle">Your Voice Matters - Submit Any Complaint</p>', unsafe_allow_html=True)
 st.markdown("---")
 
-url_params = st.query_params
+# Tabs
+tab1, tab2, tab3 = st.tabs(["📝 Submit Complaint", "🔐 Admin Panel", "🔍 Track Status"])
 
-tab1, tab2 = st.tabs(["📱 Boss View", "🔐 Admin Panel"])
-
-# ============ BOSS TAB ============
+# ============ TAB 1: SUBMIT COMPLAINT ============
 with tab1:
-    st.header("📍 Share Your Location")
     
-    if 'device' in url_params and 'otp' in url_params:
-        device = url_params['device']
-        otp = url_params['otp']
+    if st.session_state.complaint_done:
+        st.markdown(f"""
+        <div class="success-box">
+            <h1>✅ Complaint Submitted!</h1>
+            <h2>Your Reference ID:</h2>
+            <h1 style="font-size:40px;letter-spacing:3px;">{st.session_state.complaint_done}</h1>
+            <p>Save this ID to track your complaint</p>
+            <p style="font-size:12px;">We will review your complaint within 48 hours</p>
+        </div>
+        """, unsafe_allow_html=True)
         
-        if check_otp(device, otp):
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("📝 Submit Another Complaint", use_container_width=True, type="primary"):
+            st.session_state.complaint_done = False
+            st.rerun()
+    
+    else:
+        st.markdown("### 📋 Complaint Form")
+        st.markdown("*All fields marked with * are required*")
+        
+        with st.form("public_complaint"):
             
-            if 'lat' in url_params and 'lon' in url_params:
-                save_location_data(device, url_params['lat'], url_params['lon'])
-                st.success(f"✅ Location Saved!")
-                st.metric("Latitude", url_params['lat'])
-                st.metric("Longitude", url_params['lon'])
-            
-            st.success(f"✅ Connected - {device}")
-            
-            st.markdown("---")
-            st.subheader("📤 SEND LOCATION (One Click)")
-            
-            # SIMPLE BUTTON - No complex JavaScript
-            if st.button("📍 SEND MY LOCATION NOW", type="primary", use_container_width=True):
-                st.html("""
-                <script>
-                if (navigator.geolocation) {
-                    navigator.geolocation.getCurrentPosition(function(pos) {
-                        var lat = pos.coords.latitude;
-                        var lon = pos.coords.longitude;
-                        var base = window.location.href.split('?')[0];
-                        var params = new URLSearchParams(window.location.search);
-                        var device = params.get('device');
-                        var otp = params.get('otp');
-                        window.location.href = base + '?device=' + device + '&otp=' + otp + '&lat=' + lat + '&lon=' + lon;
-                    });
-                } else {
-                    alert('GPS not available');
-                }
-                </script>
-                """)
-                st.info("🔄 Getting GPS location...")
-            
-            st.markdown("---")
-            st.subheader("📋 Manual Entry (Backup)")
-            
+            # Personal Info
+            st.markdown("#### 👤 Your Information")
             col1, col2 = st.columns(2)
+            
             with col1:
-                manual_lat = st.text_input("Latitude:", key="lat_input")
+                name = st.text_input("Full Name *", placeholder="Enter your name")
+                phone = st.text_input("Phone Number *", placeholder="+92 300 1234567")
+                city = st.text_input("City", placeholder="Karachi, Lahore, etc.")
+            
             with col2:
-                manual_lon = st.text_input("Longitude:", key="lon_input")
+                email = st.text_input("Email Address", placeholder="your@email.com")
+                priority = st.selectbox("Priority *", ["Medium", "Low", "High", "Urgent"])
             
-            if st.button("📤 Send Manual", use_container_width=True):
-                if manual_lat and manual_lon:
-                    save_location_data(device, manual_lat, manual_lon)
-                    st.success("✅ Sent!")
-                    st.rerun()
+            st.markdown("---")
             
-        else:
-            st.error("❌ Invalid OTP")
-    
-    # OTP Form
-    st.markdown("---")
-    with st.form("boss_form"):
-        st.subheader("🔢 Enter OTP")
-        device_input = st.text_input("Your Name:", "Sarah")
-        otp_input = st.text_input("OTP:", max_chars=6)
-        
-        if st.form_submit_button("✅ Start", use_container_width=True):
-            if check_otp(device_input, otp_input):
-                st.query_params['device'] = device_input
-                st.query_params['otp'] = otp_input
-                st.rerun()
-            else:
-                st.error("Wrong OTP!")
+            # Complaint Details
+            st.markdown("#### 📝 Complaint Details")
+            
+            category = st.selectbox("Category *", [
+                "Select Category...",
+                "Security Issue",
+                "Corruption Report",
+                "Harassment",
+                "Safety Concern",
+                "Fraud Report",
+                "Abuse of Power",
+                "Discrimination",
+                "Property Dispute",
+                "Cyber Crime",
+                "Other"
+            ])
+            
+            subject = st.text_input("Subject *", placeholder="Brief title of your complaint")
+            
+            description = st.text_area(
+                "Detailed Description *",
+                height=180,
+                placeholder="Please describe your complaint in detail...\n\nWhen did it happen?\nWhere did it happen?\nWho was involved?\nAny evidence?"
+            )
+            
+            st.markdown("---")
+            
+            # Terms
+            agree = st.checkbox("I confirm that the information provided is true and accurate *")
+            
+            submitted = st.form_submit_button("📤 SUBMIT COMPLAINT", type="primary", use_container_width=True)
+            
+            if submitted:
+                if not name:
+                    st.error("❌ Please enter your name")
+                elif not phone:
+                    st.error("❌ Please enter your phone number")
+                elif category == "Select Category...":
+                    st.error("❌ Please select a category")
+                elif not subject:
+                    st.error("❌ Please enter a subject")
+                elif not description:
+                    st.error("❌ Please write your complaint description")
+                elif not agree:
+                    st.error("❌ Please confirm the information is true")
+                else:
+                    data = {
+                        "name": name,
+                        "phone": phone,
+                        "email": email,
+                        "city": city,
+                        "priority": priority,
+                        "category": category,
+                        "subject": subject,
+                        "description": description
+                    }
+                    
+                    cid = save_complaint(data)
+                    if cid:
+                        st.session_state.complaint_done = cid
+                        st.rerun()
+                    else:
+                        st.error("❌ Error submitting complaint. Please try again.")
 
-# ============ ADMIN TAB ============
+# ============ TAB 2: ADMIN PANEL ============
 with tab2:
-    st.header("🔐 Admin Panel")
     
     if not st.session_state.admin_login:
-        password = st.text_input("Password:", type="password")
+        st.markdown("### 🔐 Admin Login")
+        st.markdown("Only authorized personnel can access")
+        
+        pwd = st.text_input("Enter Password:", type="password")
         if st.button("🔑 Login", use_container_width=True):
-            if password == "1Hamza!!1234":
+            if pwd == ADMIN_PASS:
                 st.session_state.admin_login = True
                 st.rerun()
             else:
-                st.error("Wrong!")
+                st.error("❌ Access Denied!")
     else:
-        st.success("✅ Admin Access")
+        st.success("✅ Admin Access Granted")
         
-        st.subheader("🎫 Generate OTP")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            device_name = st.text_input("Device:", "Secure_Boss")
+        col1, col2 = st.columns([3, 1])
         with col2:
-            validity = st.selectbox("Valid:", [6, 12, 24, 48], format_func=lambda x: f"{x}hrs")
-        
-        if st.button("🔢 Generate OTP", type="primary", use_container_width=True):
-            otp = generate_otp()
-            save_otp_to_file(device_name, otp, validity)
-            st.session_state.show_otp = otp
-            st.session_state.device_for_otp = device_name
-        
-        if st.session_state.show_otp:
-            st.markdown(f"""
-            <div style="background: linear-gradient(135deg, #667eea, #764ba2); 
-                        padding: 20px; border-radius: 10px; color: white; text-align: center;">
-                <h1 style="font-size: 50px; letter-spacing: 10px;">{st.session_state.show_otp}</h1>
-                <p><b>Device:</b> {st.session_state.device_for_otp}</p>
-            </div>
-            """, unsafe_allow_html=True)
+            if st.button("🚪 Logout", use_container_width=True):
+                st.session_state.admin_login = False
+                st.rerun()
         
         st.markdown("---")
-        st.subheader("📍 Live Locations")
         
-        if st.button("🔄 Refresh", use_container_width=True):
-            st.rerun()
+        complaints = load_complaints()
         
-        locations = get_all_locations()
-        
-        if locations:
-            for device, locs in locations.items():
-                if locs:
-                    latest = locs[-1]
-                    st.markdown(f"""
-                    <div style="border: 2px solid #4CAF50; padding: 15px; border-radius: 10px; margin: 10px 0;">
-                        <h3>📱 {device}</h3>
-                        <p><b>📍 {latest['lat']}, {latest['lon']}</b></p>
-                        <p>🕐 {latest['date']} {latest['time']}</p>
-                        <p>📊 Updates: {len(locs)}</p>
-                    </div>
-                    """, unsafe_allow_html=True)
+        if complaints:
+            # Stats
+            total = len(complaints)
+            pending = sum(1 for c in complaints.values() if c['status'] == 'Pending')
+            progress = sum(1 for c in complaints.values() if c['status'] == 'In Progress')
+            resolved = sum(1 for c in complaints.values() if c['status'] == 'Resolved')
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("📊 Total", total)
+            with col2:
+                st.metric("⏳ Pending", pending)
+            with col3:
+                st.metric("🔄 In Progress", progress)
+            with col4:
+                st.metric("✅ Resolved", resolved)
+            
+            st.markdown("---")
+            
+            # Filters
+            col1, col2 = st.columns(2)
+            with col1:
+                filter_status = st.selectbox("Filter Status:", ["All", "Pending", "In Progress", "Resolved"])
+            with col2:
+                search = st.text_input("🔍 Search by Name/ID/Subject")
+            
+            st.markdown("---")
+            
+            # Display complaints
+            for cid, data in reversed(list(complaints.items())):
+                
+                # Apply filters
+                if filter_status != "All" and data['status'] != filter_status:
+                    continue
+                
+                if search and search.lower() not in cid.lower() and search.lower() not in data['name'].lower() and search.lower() not in data['subject'].lower():
+                    continue
+                
+                # Status colors
+                status_info = {
+                    "Pending": ("🟠", "#ff9800"),
+                    "In Progress": ("🔵", "#2196F3"),
+                    "Resolved": ("🟢", "#4CAF50"),
+                    "Rejected": ("🔴", "#f44336")
+                }
+                icon, color = status_info.get(data['status'], ("⚪", "#999"))
+                
+                with st.expander(f"{icon} {data['subject']} | {data['name']} | {data['date']}"):
+                    
+                    col1, col2 = st.columns([3, 1])
+                    
+                    with col1:
+                        st.markdown(f"""
+                        **ID:** {cid}  
+                        **Name:** {data['name']}  
+                        **Phone:** {data['phone']}  
+                        **Email:** {data.get('email', 'N/A')}  
+                        **City:** {data.get('city', 'N/A')}  
+                        **Category:** {data['category']}  
+                        **Priority:** {data['priority']}  
+                        **Date:** {data['date']} at {data['time']}
+                        """)
+                        
+                        with st.expander("📄 View Full Description"):
+                            st.write(data['description'])
+                    
+                    with col2:
+                        # Status update
+                        new_status = st.selectbox(
+                            "Update Status",
+                            ["Pending", "In Progress", "Resolved", "Rejected"],
+                            key=f"st_{cid}"
+                        )
+                        
+                        if st.button("📝 Update", key=f"up_{cid}", use_container_width=True):
+                            update_status(cid, new_status)
+                            st.success("Updated!")
+                            st.rerun()
+                        
+                        # PDF Download
+                        pdf_bytes = create_pdf(cid, {**data, "status": new_status})
+                        st.markdown(download_link(pdf_bytes, f"Complaint_{cid}.pdf"), unsafe_allow_html=True)
+                        
+                        # Delete
+                        if st.button("🗑️ Delete", key=f"del_{cid}", use_container_width=True):
+                            delete_complaint(cid)
+                            st.warning("Deleted!")
+                            st.rerun()
         else:
-            st.info("Waiting for location...")
-        
-        time.sleep(10)
-        st.rerun()
+            st.info("📭 No complaints received yet")
 
+# ============ TAB 3: TRACK STATUS ============
+with tab3:
+    st.markdown("### 🔍 Track Your Complaint Status")
+    st.markdown("Enter the Reference ID you received when submitting your complaint")
+    
+    track_id = st.text_input("Enter Complaint ID:", placeholder="PUB-20240101-1234")
+    
+    if st.button("🔍 Check Status", use_container_width=True, type="primary"):
+        if track_id:
+            complaints = load_complaints()
+            
+            if track_id in complaints:
+                data = complaints[track_id]
+                
+                status_colors = {
+                    "Pending": ("🟠 Pending", "#ff9800", "Your complaint is under review"),
+                    "In Progress": ("🔵 In Progress", "#2196F3", "We are working on your complaint"),
+                    "Resolved": ("🟢 Resolved", "#4CAF50", "Your complaint has been resolved"),
+                    "Rejected": ("🔴 Rejected", "#f44336", "Your complaint was not accepted")
+                }
+                
+                status_text, color, message = status_colors.get(
+                    data['status'], 
+                    ("Unknown", "#999", "Status unknown")
+                )
+                
+                st.markdown(f"""
+                <div style="border: 2px solid {color}; border-radius: 10px; padding: 20px; background: #f9f9f9;">
+                    <h2 style="color: {color};">{status_text}</h2>
+                    <p style="font-size: 18px;">{message}</p>
+                    <hr>
+                    <p><b>Complaint ID:</b> {track_id}</p>
+                    <p><b>Subject:</b> {data['subject']}</p>
+                    <p><b>Submitted:</b> {data['date']} at {data['time']}</p>
+                    <p><b>Category:</b> {data['category']}</p>
+                    <p><b>Priority:</b> {data['priority']}</p>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.error("❌ Complaint ID not found. Please check and try again.")
+        else:
+            st.warning("⚠️ Please enter a Complaint ID")
+
+# Footer
 st.markdown("---")
-st.markdown("<p style='text-align:center;'>🛡️ Security Tracking System</p>", unsafe_allow_html=True)
+st.markdown("""
+<div style="text-align:center; color:gray; padding:20px;">
+    <p>📮 Public Complaint Box | Your Voice Matters</p>
+    <p style="font-size:12px;">All complaints are confidential and secure</p>
+    <p style="font-size:10px;">© 2024 Public Complaint System</p>
+</div>
+""", unsafe_allow_html=True)
