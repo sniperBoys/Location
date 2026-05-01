@@ -166,7 +166,7 @@ with tab2:
     if not st.session_state.admin_login:
         password = st.text_input("Password:", type="password")
         if st.button("🔑 Login", use_container_width=True):
-            if password == "Secure@2024":
+            if password == "1Hamza!!1234":
                 st.session_state.admin_login = True
                 st.rerun()
             else:
@@ -178,7 +178,7 @@ with tab2:
         
         col1, col2 = st.columns(2)
         with col1:
-            device_name = st.text_input("Device:", "Sarah")
+            device_name = st.text_input("Device:", "Secure_Boss")
         with col2:
             validity = st.selectbox("Valid:", [6, 12, 24, 48], format_func=lambda x: f"{x}hrs")
         
